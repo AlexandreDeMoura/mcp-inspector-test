@@ -164,6 +164,54 @@ export interface ToolCallEvent {
   result?: string;
   errorMessage?: string;
   durationMs?: number;
+  /** If true, this is a sub-tool call from a code-execution server */
+  isSubToolCall?: boolean;
+  /** Parent tool call ID if this is a sub-tool call */
+  parentToolCallId?: string;
+}
+
+/**
+ * Sub-Tool Call structure returned by code-execution servers
+ * Code-execution servers should return results in this format to enable
+ * proper visualization of internal operations
+ */
+export interface SubToolCallResult {
+  toolName: string;
+  args: Record<string, unknown>;
+  result: string;
+  durationMs?: number;
+  status: 'success' | 'error';
+  errorMessage?: string;
+}
+
+/**
+ * Structured result format for code-execution servers
+ * If a server returns results in this format, the UI will display
+ * each internal tool call as a separate block
+ */
+export interface CodeExecutionResult {
+  /** Indicates this is a structured code execution result */
+  __codeExecution: true;
+  /** The final result/output of the code execution */
+  finalResult: string;
+  /** List of internal tool calls made during execution */
+  toolCalls: SubToolCallResult[];
+  /** Total execution time */
+  totalDurationMs?: number;
+}
+
+/**
+ * Check if a result is a structured code execution result
+ */
+export function isCodeExecutionResult(result: unknown): result is CodeExecutionResult {
+  return (
+    typeof result === 'object' &&
+    result !== null &&
+    '__codeExecution' in result &&
+    (result as CodeExecutionResult).__codeExecution === true &&
+    'toolCalls' in result &&
+    Array.isArray((result as CodeExecutionResult).toolCalls)
+  );
 }
 
 export type TaskEvent =

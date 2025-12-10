@@ -273,13 +273,25 @@ export function findToolServer(toolName: string): ConnectedServer | undefined {
 // ============================================================================
 
 /**
+ * Result from tool execution with optional structured data
+ */
+export interface ToolExecutionResult {
+  /** String result (may be JSON for structured results) */
+  result: string;
+  /** Whether an error occurred */
+  isError: boolean;
+  /** Raw parsed result (if JSON was successfully parsed) */
+  parsedResult?: unknown;
+}
+
+/**
  * Execute a tool on the appropriate server
  */
 export async function executeTool(
   toolName: string,
   args: Record<string, unknown>,
   timeoutMs: number = 30000
-): Promise<{ result: string; isError: boolean }> {
+): Promise<ToolExecutionResult> {
   const connected = findToolServer(toolName);
 
   if (!connected) {
@@ -307,15 +319,31 @@ export async function executeTool(
 
     // Extract text content from result
     const content = result.content;
+    let textResult: string;
+    let parsedResult: unknown = undefined;
+
     if (Array.isArray(content)) {
       const textContent = content
         .filter((c): c is { type: 'text'; text: string } => c.type === 'text')
         .map((c) => c.text)
         .join('\n');
-      return { result: textContent || JSON.stringify(content), isError: result.isError === true };
+      textResult = textContent || JSON.stringify(content);
+    } else {
+      textResult = JSON.stringify(content);
     }
 
-    return { result: JSON.stringify(content), isError: result.isError === true };
+    // Try to parse as JSON to detect structured results (like code execution results)
+    try {
+      parsedResult = JSON.parse(textResult);
+    } catch {
+      // Not JSON, that's fine - use as plain text
+    }
+
+    return { 
+      result: textResult, 
+      isError: result.isError === true,
+      parsedResult,
+    };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[MCP Host] Tool execution error: ${message}`);

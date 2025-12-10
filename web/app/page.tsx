@@ -6,6 +6,7 @@ const AVAILABLE_SERVERS = [
   { id: 'filesystem', name: 'Filesystem' },
   { id: 'brave-search', name: 'Brave Search' },
   { id: 'notion-mcp', name: 'Notion MCP' },
+  { id: 'notion-mcp-code-execution', name: 'Notion MCP Code Execution' },
 ];
 
 // ============================================================================
@@ -33,6 +34,10 @@ interface ToolCallBlock {
   result?: string;
   errorMessage?: string;
   durationMs?: number;
+  /** If true, this is a sub-tool call from a code-execution server */
+  isSubToolCall?: boolean;
+  /** Parent tool call ID if this is a sub-tool call */
+  parentToolCallId?: string;
 }
 
 interface TaskSummary {
@@ -122,46 +127,77 @@ function ToolCallBlockComponent({ block, isExpanded, onToggle }: {
 }) {
   const isRunning = block.status === 'running';
   const isError = block.status === 'error';
+  const isSubTool = block.isSubToolCall;
   const durationSec = block.durationMs ? (block.durationMs / 1000).toFixed(2) : '...';
   
-  const statusStyles = {
+  // Different styles for sub-tool calls
+  const statusStyles = isSubTool ? {
+    running: 'border-orange-400/50 bg-linear-to-br from-orange-950/40 to-slate-900/80 border-dashed',
+    success: 'border-teal-400/50 bg-linear-to-br from-teal-950/40 to-slate-900/80 border-dashed',
+    error: 'border-rose-400/50 bg-linear-to-br from-rose-950/40 to-slate-900/80 border-dashed',
+  } : {
     running: 'border-amber-500/60 bg-linear-to-br from-amber-950/60 to-slate-900',
     success: 'border-emerald-500/60 bg-linear-to-br from-emerald-950/60 to-slate-900',
     error: 'border-red-500/60 bg-linear-to-br from-red-950/60 to-slate-900',
   };
   
-  const statusColors = {
+  const statusColors = isSubTool ? {
+    running: 'text-orange-300',
+    success: 'text-teal-300',
+    error: 'text-rose-300',
+  } : {
     running: 'text-amber-400',
     success: 'text-emerald-400',
     error: 'text-red-400',
   };
 
   return (
-    <div className="flex flex-col items-center">
+    <div className={`flex flex-col items-center ${isSubTool ? 'ml-8' : ''}`}>
+      {/* Sub-tool indicator line */}
+      {isSubTool && (
+        <div className="flex items-center self-start -ml-8 mb-1">
+          <div className="w-6 h-0.5 bg-slate-600/50" />
+          <div className="w-2 h-2 rounded-full bg-slate-600/50" />
+        </div>
+      )}
+      
       {/* Tool block */}
       <div 
-        className={`relative border-2 rounded-xl px-5 py-4 max-w-2xl w-full cursor-pointer transition-all hover:scale-[1.01] ${statusStyles[block.status]}`}
+        className={`relative border-2 rounded-xl px-5 py-4 w-full cursor-pointer transition-all hover:scale-[1.01] ${statusStyles[block.status]} ${isSubTool ? 'max-w-xl' : 'max-w-2xl'}`}
         onClick={onToggle}
       >
         {/* Running indicator */}
         {isRunning && (
           <div className="absolute -top-1 -right-1 w-3 h-3">
-            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-75" />
-            <span className="relative inline-flex rounded-full h-3 w-3 bg-amber-500" />
+            <span className={`absolute inline-flex h-full w-full animate-ping rounded-full ${isSubTool ? 'bg-orange-400' : 'bg-amber-400'} opacity-75`} />
+            <span className={`relative inline-flex rounded-full h-3 w-3 ${isSubTool ? 'bg-orange-500' : 'bg-amber-500'}`} />
+          </div>
+        )}
+        
+        {/* Sub-tool badge */}
+        {isSubTool && (
+          <div className="absolute -top-2 -left-2 px-2 py-0.5 bg-slate-800 border border-slate-600/50 rounded text-[10px] text-slate-400 font-medium uppercase tracking-wider">
+            sub-call
           </div>
         )}
         
         {/* Header */}
         <div className="flex items-center justify-between mb-2">
           <div className="flex items-center gap-2">
-            <div className={`p-1.5 rounded-lg ${isError ? 'bg-red-500/20' : isRunning ? 'bg-amber-500/20' : 'bg-emerald-500/20'}`}>
-              <svg className={`w-4 h-4 ${statusColors[block.status]}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-              </svg>
+            <div className={`p-1.5 rounded-lg ${isError ? (isSubTool ? 'bg-rose-500/20' : 'bg-red-500/20') : isRunning ? (isSubTool ? 'bg-orange-500/20' : 'bg-amber-500/20') : (isSubTool ? 'bg-teal-500/20' : 'bg-emerald-500/20')}`}>
+              {isSubTool ? (
+                <svg className={`w-4 h-4 ${statusColors[block.status]}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                </svg>
+              ) : (
+                <svg className={`w-4 h-4 ${statusColors[block.status]}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                </svg>
+              )}
             </div>
             <div>
-              <div className="font-semibold text-white">{block.toolName}</div>
+              <div className={`font-semibold ${isSubTool ? 'text-slate-200' : 'text-white'}`}>{block.toolName}</div>
               <div className="text-xs text-slate-400">{block.serverName}</div>
             </div>
           </div>
@@ -170,7 +206,7 @@ function ToolCallBlockComponent({ block, isExpanded, onToggle }: {
             <span className={`font-mono ${statusColors[block.status]}`}>
               {isRunning ? (
                 <span className="flex items-center gap-1">
-                  <span className="w-2 h-2 bg-amber-500 rounded-full animate-pulse" />
+                  <span className={`w-2 h-2 ${isSubTool ? 'bg-orange-500' : 'bg-amber-500'} rounded-full animate-pulse`} />
                   running
                 </span>
               ) : (
@@ -194,7 +230,7 @@ function ToolCallBlockComponent({ block, isExpanded, onToggle }: {
         {isExpanded && block.result && (
           <div className="mt-3 pt-3 border-t border-slate-700/50">
             <div className="text-xs text-slate-500 mb-1">Result:</div>
-            <div className={`text-xs font-mono p-2 rounded-lg max-h-48 overflow-auto ${isError ? 'bg-red-950/30 text-red-300' : 'bg-slate-900/50 text-slate-300'}`}>
+            <div className={`text-xs font-mono p-2 rounded-lg max-h-48 overflow-auto ${isError ? (isSubTool ? 'bg-rose-950/30 text-rose-300' : 'bg-red-950/30 text-red-300') : 'bg-slate-900/50 text-slate-300'}`}>
               <pre className="whitespace-pre-wrap">{block.result}</pre>
             </div>
           </div>
@@ -202,7 +238,7 @@ function ToolCallBlockComponent({ block, isExpanded, onToggle }: {
       </div>
       
       {/* Connector to next element */}
-      <div className="w-0.5 h-4 bg-linear-to-b from-slate-600 to-slate-600/40" />
+      <div className={`w-0.5 h-4 bg-linear-to-b from-slate-600 to-slate-600/40 ${isSubTool ? '-ml-8' : ''}`} />
     </div>
   );
 }
@@ -401,6 +437,8 @@ export default function Home() {
                     toolName: event.toolName,
                     args: event.args,
                     status: 'running',
+                    isSubToolCall: event.isSubToolCall,
+                    parentToolCallId: event.parentToolCallId,
                   }]);
                 } else {
                   // Tool call completed - update existing block

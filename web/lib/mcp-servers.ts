@@ -48,6 +48,18 @@ export const MCP_SERVERS: ServerDefinition[] = [
       transport: 'stdio',
     },
   },
+  {
+    id: 'notion-mcp-code-execution',
+    name: 'Notion MCP Code Execution',
+    config: {
+      command: 'node',
+      args: ['/Users/alexandredemoura/Desktop/mcp/notion-mcp/dist/server-code-exec.js'],
+      env: {
+        NOTION_API_KEY: process.env.NOTION_API_KEY || '',
+      },
+      transport: 'stdio',
+    },
+  },
 ];
 
 /**

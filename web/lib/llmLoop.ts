@@ -5,7 +5,8 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import type { MessageParam, ToolResultBlockParam, ToolUseBlock } from '@anthropic-ai/sdk/resources/messages';
-import type { MCPToolWithServer, AppConfig, TaskEvent } from './types';
+import type { MCPToolWithServer, AppConfig, TaskEvent, CodeExecutionResult, SubToolCallResult } from './types';
+import { isCodeExecutionResult } from './types';
 import {
   connectServers,
   disconnectAllServers,
@@ -225,38 +226,107 @@ export async function* runTaskGenerator(options: RunTaskOptions): AsyncGenerator
 
           // Execute tool
           const toolStartTime = Date.now();
-          const { result, isError } = await executeTool(toolName, toolArgs, toolTimeoutMs);
+          const { result, isError, parsedResult } = await executeTool(toolName, toolArgs, toolTimeoutMs);
           const toolDurationMs = Date.now() - toolStartTime;
 
-          // Complete tracking
-          completeToolCall(
-            toolCall.id,
-            task.id,
-            isError ? 'error' : 'success',
-            result,
-            isError ? result : undefined
-          );
+          // Check if this is a structured code execution result with sub-tool calls
+          if (parsedResult && isCodeExecutionResult(parsedResult)) {
+            const codeExecResult = parsedResult as CodeExecutionResult;
+            
+            // Emit sub-tool call events for each internal operation
+            for (const subToolCall of codeExecResult.toolCalls) {
+              const subToolId = `${toolCall.id}-sub-${Math.random().toString(36).substr(2, 9)}`;
+              
+              // Emit running status for sub-tool
+              yield {
+                type: 'tool-call',
+                toolCallId: subToolId,
+                serverName,
+                toolName: subToolCall.toolName,
+                args: subToolCall.args,
+                status: 'running',
+                isSubToolCall: true,
+                parentToolCallId: toolCall.id,
+              };
+              
+              // Immediately emit completed status (since it already ran)
+              yield {
+                type: 'tool-call',
+                toolCallId: subToolId,
+                serverName,
+                toolName: subToolCall.toolName,
+                args: subToolCall.args,
+                status: subToolCall.status,
+                result: subToolCall.result,
+                errorMessage: subToolCall.errorMessage,
+                durationMs: subToolCall.durationMs,
+                isSubToolCall: true,
+                parentToolCallId: toolCall.id,
+              };
+            }
 
-          // Yield tool-call event with completed status
-          yield {
-            type: 'tool-call',
-            toolCallId: toolCall.id,
-            serverName,
-            toolName,
-            args: toolArgs,
-            status: isError ? 'error' : 'success',
-            result,
-            errorMessage: isError ? result : undefined,
-            durationMs: toolDurationMs,
-          };
+            // Complete tracking for parent tool
+            completeToolCall(
+              toolCall.id,
+              task.id,
+              isError ? 'error' : 'success',
+              codeExecResult.finalResult,
+              isError ? result : undefined
+            );
 
-          // Add to results
-          toolResults.push({
-            type: 'tool_result',
-            tool_use_id: toolUse.id,
-            content: result,
-            is_error: isError,
-          });
+            // Yield parent tool-call event with completed status
+            yield {
+              type: 'tool-call',
+              toolCallId: toolCall.id,
+              serverName,
+              toolName,
+              args: toolArgs,
+              status: isError ? 'error' : 'success',
+              result: codeExecResult.finalResult,
+              errorMessage: isError ? result : undefined,
+              durationMs: toolDurationMs,
+            };
+
+            // Use the final result for the conversation
+            toolResults.push({
+              type: 'tool_result',
+              tool_use_id: toolUse.id,
+              content: codeExecResult.finalResult,
+              is_error: isError,
+            });
+          } else {
+            // Standard tool call - no sub-tool calls
+            
+            // Complete tracking
+            completeToolCall(
+              toolCall.id,
+              task.id,
+              isError ? 'error' : 'success',
+              result,
+              isError ? result : undefined
+            );
+
+            // Yield tool-call event with completed status
+            yield {
+              type: 'tool-call',
+              toolCallId: toolCall.id,
+              serverName,
+              toolName,
+              args: toolArgs,
+              status: isError ? 'error' : 'success',
+              result,
+              errorMessage: isError ? result : undefined,
+              durationMs: toolDurationMs,
+            };
+
+            // Add to results
+            toolResults.push({
+              type: 'tool_result',
+              tool_use_id: toolUse.id,
+              content: result,
+              is_error: isError,
+            });
+          }
         }
 
         // Add tool results to conversation
