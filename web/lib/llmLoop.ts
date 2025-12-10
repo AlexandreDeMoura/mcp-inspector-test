@@ -83,7 +83,9 @@ export interface RunTaskOptions {
 
 /**
  * Run a complete task with the LLM loop - Generator Version
- * Yields events for the UI to display progress
+ * Yields structured events for the canvas UI:
+ * - llm-response: AI reasoning between tool calls (displayed as arrows)
+ * - tool-call: Tool invocations (displayed as blocks)
  */
 export async function* runTaskGenerator(options: RunTaskOptions): AsyncGenerator<TaskEvent, void, unknown> {
   const {
@@ -94,28 +96,27 @@ export async function* runTaskGenerator(options: RunTaskOptions): AsyncGenerator
   } = options;
 
   const maxIterations = config.maxIterations ?? 20;
-  const taskTimeoutMs = config.taskTimeoutMs ?? 300000;
   const toolTimeoutMs = config.toolTimeoutMs ?? 30000;
+
+  // Track totals for the task
+  const taskStartTime = Date.now();
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
 
   // Create task
   const task = createTask(userMessage, model, serverIds);
   yield { type: 'task-started', taskId: task.id, timestamp: new Date() };
-  yield { type: 'log', message: `Starting task with ${serverIds.length} servers...` };
 
   try {
     // Connect to servers
-    yield { type: 'log', message: 'Connecting to MCP servers...' };
     const connected = await connectServers(serverIds);
 
     if (connected.length === 0) {
       throw new Error('No MCP servers could be connected');
     }
 
-    yield { type: 'log', message: `Connected to ${connected.length} servers: ${connected.map(s => s.server.name).join(', ')}` };
-
     // Get tools from connected servers
     const tools = getToolsForServers(serverIds);
-    yield { type: 'log', message: `Available tools: ${tools.map((t) => t.name).join(', ')}` };
 
     if (tools.length === 0) {
       throw new Error('No tools available from connected servers');
@@ -140,12 +141,9 @@ export async function* runTaskGenerator(options: RunTaskOptions): AsyncGenerator
 
     while (iteration < maxIterations) {
       iteration = incrementIteration(task.id);
-      yield { type: 'log', message: `Iteration ${iteration}/${maxIterations}` };
 
       // Call the model
-      const startTime = Date.now();
-      
-      yield { type: 'log', message: 'Calling model...' };
+      const llmStartTime = Date.now();
       
       const response = await client.messages.create({
         model: task.model,
@@ -155,22 +153,19 @@ export async function* runTaskGenerator(options: RunTaskOptions): AsyncGenerator
         messages,
       });
 
-      const durationMs = Date.now() - startTime;
+      const llmDurationMs = Date.now() - llmStartTime;
       
-      yield { 
-        type: 'model-call', 
-        inputTokens: response.usage.input_tokens, 
-        outputTokens: response.usage.output_tokens, 
-        durationMs 
-      };
+      // Update totals
+      totalInputTokens += response.usage.input_tokens;
+      totalOutputTokens += response.usage.output_tokens;
 
-      // Record model call
+      // Record model call for tracing
       recordModelCall(
         task.id,
         iteration === 1 ? 'initial' : 'tool-result',
         response.usage.input_tokens,
         response.usage.output_tokens,
-        durationMs,
+        llmDurationMs,
         response.stop_reason || undefined
       );
 
@@ -181,16 +176,23 @@ export async function* runTaskGenerator(options: RunTaskOptions): AsyncGenerator
       for (const block of response.content) {
         if (block.type === 'text') {
           textContent += block.text;
-          yield { type: 'log', message: `Assistant: ${block.text}` };
         } else if (block.type === 'tool_use') {
           toolUses.push(block);
         }
       }
 
+      // Yield LLM response event (the AI reasoning)
+      yield {
+        type: 'llm-response',
+        content: textContent,
+        inputTokens: response.usage.input_tokens,
+        outputTokens: response.usage.output_tokens,
+        durationMs: llmDurationMs,
+        hasToolCalls: toolUses.length > 0,
+      };
+
       // Check if we have tool calls to process
       if (toolUses.length > 0) {
-        yield { type: 'log', message: `Processing ${toolUses.length} tool call(s)...` };
-
         // Add assistant message with tool uses
         messages.push({
           role: 'assistant',
@@ -208,14 +210,23 @@ export async function* runTaskGenerator(options: RunTaskOptions): AsyncGenerator
           const server = findToolServer(toolName);
           const serverName = server?.server.name || 'unknown';
 
-          yield { type: 'log', message: `Calling tool: ${toolName} on ${serverName}` };
-          
           // Start tracking
           const toolCall = startToolCall(task.id, serverName, toolName, toolArgs);
-          yield { type: 'tool-started', toolCallId: toolCall.id, serverName, toolName };
+          
+          // Yield tool-call event with running status
+          yield {
+            type: 'tool-call',
+            toolCallId: toolCall.id,
+            serverName,
+            toolName,
+            args: toolArgs,
+            status: 'running',
+          };
 
           // Execute tool
+          const toolStartTime = Date.now();
           const { result, isError } = await executeTool(toolName, toolArgs, toolTimeoutMs);
+          const toolDurationMs = Date.now() - toolStartTime;
 
           // Complete tracking
           completeToolCall(
@@ -226,12 +237,17 @@ export async function* runTaskGenerator(options: RunTaskOptions): AsyncGenerator
             isError ? result : undefined
           );
 
-          yield { 
-            type: 'tool-completed', 
-            toolCallId: toolCall.id, 
-            status: isError ? 'error' : 'success', 
-            durationMs: 0, // We could calculate this better if needed
-            result
+          // Yield tool-call event with completed status
+          yield {
+            type: 'tool-call',
+            toolCallId: toolCall.id,
+            serverName,
+            toolName,
+            args: toolArgs,
+            status: isError ? 'error' : 'success',
+            result,
+            errorMessage: isError ? result : undefined,
+            durationMs: toolDurationMs,
           };
 
           // Add to results
@@ -256,13 +272,22 @@ export async function* runTaskGenerator(options: RunTaskOptions): AsyncGenerator
       // No tool calls - check if we're done
       if (response.stop_reason === 'end_turn') {
         finalAnswer = textContent;
+        const totalDurationMs = Date.now() - taskStartTime;
         completeTask(task.id, 'succeeded', finalAnswer);
-        yield { type: 'task-completed', status: 'succeeded', finalAnswer };
+        yield { 
+          type: 'task-completed', 
+          status: 'succeeded', 
+          finalAnswer,
+          totalDurationMs,
+          totalInputTokens,
+          totalOutputTokens,
+        };
         return;
       }
     }
 
     // Max iterations reached
+    const totalDurationMs = Date.now() - taskStartTime;
     completeTask(task.id, 'timeout', undefined, 'Max iterations exceeded');
     yield { type: 'error', message: 'Max iterations exceeded', code: 'MAX_ITERATIONS' };
 

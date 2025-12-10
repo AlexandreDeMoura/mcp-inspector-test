@@ -132,16 +132,45 @@ export interface LLMResponse {
 }
 
 // ============================================================================
-// Event Types (for SSE in Phase 2)
+// Event Types (for Canvas UI)
 // ============================================================================
 
+/**
+ * LLM Response Event
+ * Represents the AI reasoning/response between tool calls
+ * Displayed as an "arrow" connecting elements in the UI
+ */
+export interface LLMResponseEvent {
+  type: 'llm-response';
+  content: string;
+  inputTokens: number;
+  outputTokens: number;
+  durationMs: number;
+  hasToolCalls: boolean;
+}
+
+/**
+ * Tool Call Event
+ * Represents a tool being invoked
+ * Displayed as a "block" in the UI
+ */
+export interface ToolCallEvent {
+  type: 'tool-call';
+  toolCallId: string;
+  serverName: string;
+  toolName: string;
+  args: Record<string, unknown>;
+  status: 'running' | 'success' | 'error';
+  result?: string;
+  errorMessage?: string;
+  durationMs?: number;
+}
+
 export type TaskEvent =
-  | { type: 'log'; message: string }
   | { type: 'task-started'; taskId: string; timestamp: Date }
-  | { type: 'model-call'; inputTokens: number; outputTokens: number; durationMs: number }
-  | { type: 'tool-started'; toolCallId: string; serverName: string; toolName: string }
-  | { type: 'tool-completed'; toolCallId: string; status: ToolCallStatus; durationMs: number; result: string }
-  | { type: 'task-completed'; status: TaskStatus; finalAnswer?: string }
+  | LLMResponseEvent
+  | ToolCallEvent
+  | { type: 'task-completed'; status: TaskStatus; finalAnswer?: string; totalDurationMs: number; totalInputTokens: number; totalOutputTokens: number }
   | { type: 'error'; message: string; code?: string };
 
 // ============================================================================
